@@ -52,6 +52,32 @@ LEGACY_CONFIG_FILES = [
     "babel.config.js",
 ]
 
+VITE_CONFIG_CANDIDATES = [
+    "vite.config.js",
+    "vite.config.ts",
+    "vite.config.mjs",
+    "vite.config.cjs",
+]
+
+REMOTE_ONLY_ENTRY_FILES = [
+    "index.html",
+    "bootstrap.js",
+    "bootstrap.ts",
+    "bootstrap.mjs",
+    "bootstrap.jsx",
+    "bootstrap.tsx",
+    "src/main.js",
+    "src/main.ts",
+    "src/main.mjs",
+    "src/main.jsx",
+    "src/main.tsx",
+    "src/bootstrap.js",
+    "src/bootstrap.ts",
+    "src/bootstrap.mjs",
+    "src/bootstrap.jsx",
+    "src/bootstrap.tsx",
+]
+
 
 @dataclass
 class Match:
@@ -187,6 +213,42 @@ def iter_text_files(project_root: Path) -> Iterable[Path]:
         yield path
 
 
+def safe_read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def load_package_json(project_root: Path) -> Dict:
+    package_json = project_root / "package.json"
+    if not package_json.exists():
+        return {}
+
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def get_vite_config_paths(project_root: Path) -> List[Path]:
+    return [project_root / name for name in VITE_CONFIG_CANDIDATES if (project_root / name).exists()]
+
+
+def get_vite_config_text(project_root: Path) -> str:
+    return "\n".join(safe_read(path) for path in get_vite_config_paths(project_root))
+
+
+def is_module_federation_project(project_root: Path) -> bool:
+    vite_config_text = get_vite_config_text(project_root)
+    return bool(
+        re.search(r"@module-federation/vite", vite_config_text)
+        or re.search(r"\bfederation\s*\(", vite_config_text)
+    )
+
+
 def should_scan_rule_for_file(rule: Rule, relpath: str) -> bool:
     if not rule.file_scope:
         return True
@@ -234,6 +296,7 @@ def scan_package_scripts(project_root: Path) -> List[Match]:
     package_json = project_root / "package.json"
     if not package_json.exists():
         return []
+
     try:
         data = json.loads(package_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -258,10 +321,80 @@ def scan_package_scripts(project_root: Path) -> List[Match]:
     return matches
 
 
+def scan_mf_app_version(project_root: Path) -> List[Match]:
+    if not is_module_federation_project(project_root):
+        return []
+
+    data = load_package_json(project_root)
+    dependencies = data.get("dependencies") if isinstance(data.get("dependencies"), dict) else {}
+    dev_dependencies = data.get("devDependencies") if isinstance(data.get("devDependencies"), dict) else {}
+    vite_config_text = get_vite_config_text(project_root)
+
+    matches: List[Match] = []
+    if "mf-app-version" not in dependencies and "mf-app-version" not in dev_dependencies:
+        matches.append(
+            Match(
+                file="package.json",
+                line=1,
+                snippet="mf-app-version is missing from dependencies/devDependencies",
+            )
+        )
+    if "createMfAppVersionPlugin" not in vite_config_text:
+        config_file = get_vite_config_paths(project_root)
+        config_name = config_file[0].relative_to(project_root).as_posix() if config_file else "vite.config.*"
+        matches.append(
+            Match(
+                file=config_name,
+                line=1,
+                snippet="createMfAppVersionPlugin import is missing from vite config",
+            )
+        )
+    if not re.search(r"\bcreateMfAppVersionPlugin\s*\(", vite_config_text):
+        config_file = get_vite_config_paths(project_root)
+        config_name = config_file[0].relative_to(project_root).as_posix() if config_file else "vite.config.*"
+        matches.append(
+            Match(
+                file=config_name,
+                line=1,
+                snippet="createMfAppVersionPlugin() call is missing from vite config plugins",
+            )
+        )
+    return matches
+
+
+def scan_remote_only_entries(project_root: Path) -> List[Match]:
+    if not is_module_federation_project(project_root):
+        return []
+
+    matches: List[Match] = []
+    for relpath in REMOTE_ONLY_ENTRY_FILES:
+        path = project_root / relpath
+        if path.exists():
+            matches.append(
+                Match(
+                    file=relpath,
+                    line=1,
+                    snippet=f"remote-only project should not keep entry shell file: {relpath}",
+                )
+            )
+    remote_wrapper = project_root / "public" / "remoteEntry.js"
+    if remote_wrapper.exists():
+        matches.append(
+            Match(
+                file="public/remoteEntry.js",
+                line=1,
+                snippet="remote-only project should not keep a handwritten public/remoteEntry.js wrapper",
+            )
+        )
+    return matches
+
+
 def build_categories(
     source_findings: Dict[str, List[Match]],
     legacy_files: List[Match],
     script_findings: List[Match],
+    mf_app_version_findings: List[Match],
+    remote_only_findings: List[Match],
 ) -> List[Dict]:
     rule_map = {rule.rule_id: rule for rule in RULES}
     categories: List[Dict] = []
@@ -305,6 +438,32 @@ def build_categories(
                 "next_action": "Switch scripts to vite / vite build / vite preview.",
                 "count": len(script_findings),
                 "matches": [match.__dict__ for match in script_findings],
+            }
+        )
+
+    if mf_app_version_findings:
+        categories.append(
+            {
+                "id": "mf-app-version-contract",
+                "title": "mf-app-version contract is incomplete",
+                "severity": "blocker",
+                "description": "Vue2 + Module Federation Vite projects must install mf-app-version and register createMfAppVersionPlugin() in vite.config.*.",
+                "next_action": "Add mf-app-version to dependencies or devDependencies and register createMfAppVersionPlugin() in the Vite plugin list.",
+                "count": len(mf_app_version_findings),
+                "matches": [match.__dict__ for match in mf_app_version_findings],
+            }
+        )
+
+    if remote_only_findings:
+        categories.append(
+            {
+                "id": "remote-only-entry-shell",
+                "title": "remote-only project still keeps HTML-mounted entry files",
+                "severity": "blocker",
+                "description": "Vue2 + Module Federation remote-only projects must not keep root index.html, standalone app-shell entry files, or handwritten public/remoteEntry.js wrappers.",
+                "next_action": "Remove root index.html, HTML-mounted entry shell files such as src/main.* or bootstrap.*, and any handwritten public/remoteEntry.js wrapper.",
+                "count": len(remote_only_findings),
+                "matches": [match.__dict__ for match in remote_only_findings],
             }
         )
 
@@ -370,7 +529,15 @@ def main() -> int:
     source_findings, files_scanned = scan_source_rules(project_root)
     legacy_files = scan_legacy_files(project_root)
     script_findings = scan_package_scripts(project_root)
-    categories = build_categories(source_findings, legacy_files, script_findings)
+    mf_app_version_findings = scan_mf_app_version(project_root)
+    remote_only_findings = scan_remote_only_entries(project_root)
+    categories = build_categories(
+        source_findings,
+        legacy_files,
+        script_findings,
+        mf_app_version_findings,
+        remote_only_findings,
+    )
     report = {
         "project_root": project_root.as_posix(),
         "summary": summarize(categories, files_scanned),

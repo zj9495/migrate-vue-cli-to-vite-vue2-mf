@@ -37,7 +37,7 @@ yarn build
 2. Move from vue-cli deps to Vite 7 stack:
 - Add `vite@7.3.1`, `@vitejs/plugin-vue2@2.3.4`, `vue@2.7.16`, and `vue-template-compiler@2.7.16`.
 - Add `@vitejs/plugin-vue2-jsx` only when the project actually contains JSX/TSX or `<script lang="jsx">`.
-- Add MF runtime/plugin when host exposes or consumes remotes: `@module-federation/vite@1.11.0`, `@module-federation/runtime@0.8.12`, `typescript@4.9.5`.
+- Add MF runtime/plugin when host exposes or consumes remotes: `@module-federation/vite@1.11.0`, `@module-federation/runtime@0.8.12`, `mf-app-version`, `typescript@4.9.5`.
 - If browser Node core shims are needed, add `buffer@6.0.3`, `crypto-browserify@3.12.1`, `events@3.3.0`, `process@0.11.10`, `stream-browserify@3.0.0`, `vm-browserify@1.1.2`.
 - If the migrated CSS pipeline needs the standard PostCSS baseline, add `postcss@8.5.10`, `postcss-import@15.1.0`, `postcss-preset-env@9.6.0`, `postcss-calc@9.0.1`, `precss@4.0.0`, `sass@1.99.0`.
 - Remove `@vue/cli-*`, `vue-cli-service`, webpack-only plugins/loaders that no longer apply.
@@ -61,10 +61,11 @@ yarn build
 - Alias mapping from webpack (`@`, `@components`, etc.).
 - Dev server host/port/proxy.
 - Env loading aligned to Vite contracts only. Read custom runtime vars from `VITE_*`, keep `BASE_URL` on Vite's built-in contract, and do not re-inject legacy `process.env.VUE_APP_*` / `process.env.BASE_URL` bridges into source code.
-2. For Vue2 + Module Federation projects, add a local `preserveVueFederationSingleton()` plugin before `federation()` in the Vite plugin list.
-3. Make the preserve plugin remove the `vue` -> `vue/dist/vue.runtime.esm.js` alias injected during Vue2 plugin resolution, so MF shared singleton resolution still targets `vue`.
-4. If Node core modules are used in browser, add alias/polyfill strategy that matches the exact baseline polyfill package set in `references/dependency-matrix.md`.
-5. If the project still relies on legacy `lang="postcss"` syntax such as `%placeholder`, `@extend`, nesting, or `//` comments, inline the PostCSS chain into `vite.config.*` using the `portal-app-web` baseline:
+2. For Vue2 + Module Federation projects, register `createMfAppVersionPlugin()` in the Vite plugin list. The plugin is the required app-version contract and automatically injects `./app-version`; do not add that expose by hand.
+3. For Vue2 + Module Federation projects, add a local `preserveVueFederationSingleton()` plugin before `federation()` in the Vite plugin list.
+4. Make the preserve plugin remove the `vue` -> `vue/dist/vue.runtime.esm.js` alias injected during Vue2 plugin resolution, so MF shared singleton resolution still targets `vue`.
+5. If Node core modules are used in browser, add alias/polyfill strategy that matches the exact baseline polyfill package set in `references/dependency-matrix.md`.
+6. If the project still relies on legacy `lang="postcss"` syntax such as `%placeholder`, `@extend`, nesting, or `//` comments, inline the PostCSS chain into `vite.config.*` using the `portal-app-web` baseline:
 ```js
 css: {
   postcss: {
@@ -85,9 +86,9 @@ css: {
   }
 }
 ```
-6. When standardizing on that layout, remove duplicate root `postcss.config.js` files so Vite uses a single PostCSS source of truth.
-7. For Vue2 + Module Federation projects, do not keep a root `index.html` entry or standalone HTML-mounted app-shell files; configure `build.rollupOptions.input = {}` so Vite builds only the remote entries.
-8. For Vue2 + Module Federation projects aligned with `portal-app-web`, standardize the Vite production build profile to:
+7. When standardizing on that layout, remove duplicate root `postcss.config.js` files so Vite uses a single PostCSS source of truth.
+8. For Vue2 + Module Federation projects, do not keep a root `index.html` entry, `src/main.*`, `bootstrap.*`, or other standalone HTML-mounted app-shell files; configure `build.rollupOptions.input = {}` so Vite builds only the remote entries.
+9. For Vue2 + Module Federation projects aligned with `portal-app-web`, standardize the Vite production build profile to:
 ```js
 build: {
   target: 'esnext',
@@ -99,10 +100,11 @@ build: {
   }
 }
 ```
-9. Do not enable `build.sourcemap` for production output unless an explicit artifact contract requires shipping `.map` artifacts.
+10. Do not enable `build.sourcemap` for production output unless an explicit artifact contract requires shipping `.map` artifacts.
 
 ### Acceptance
 - `vite.config.*` exists and parses.
+- For Vue2 + MF, `vite.config.*` registers `createMfAppVersionPlugin()`; do not require a handwritten `./app-version` expose.
 - For Vue2 + MF, `vite.config.*` registers `preserveVueFederationSingleton()` before `federation()`.
 - If the project keeps legacy `lang="postcss"` syntax, `vite.config.*` must inline the `portal-app-web` PostCSS plugin chain and include `precss`.
 - For Vue2 + MF, the config does not require root `index.html` and explicitly disables HTML entry builds with `build.rollupOptions.input = {}`.
@@ -163,11 +165,12 @@ aligned with `portal-app-web`.
 6. If downstream webpack consumers load remote via classic script:
 - Keep ESM entry `remoteEntry.es.js` for Vite runtime.
 - Use the federation plugin-generated `remoteEntry.js` compatibility entry via `varFilename`; do not create or retain a checked-in `public/remoteEntry.js` wrapper.
-7. Harden remote registration/loading with callable checks and clear error logs.
+7. Treat `mf-app-version` as part of the MF compatibility contract: install it and register `createMfAppVersionPlugin()`, but do not add `./app-version` manually because the plugin injects it.
+8. Harden remote registration/loading with callable checks and clear error logs.
 
 ### Acceptance
 - Remote container loads with expected type in both Vite and webpack consumer paths.
-- Vue2 + MF output is remote-only: `remoteEntry.es.js` and `remoteEntry.js` are the only required public entry URLs, and root HTML is not a required app entry.
+- Vue2 + MF output is remote-only: `remoteEntry.es.js` and `remoteEntry.js` are the only required public entry URLs, root HTML is not a required app entry, and no standalone HTML-mounted app-shell files remain.
 - Vue shared singleton still resolves through `vue` instead of a hard-coded `vue/dist/vue.runtime.esm.js` alias.
 
 ### Rollback Point

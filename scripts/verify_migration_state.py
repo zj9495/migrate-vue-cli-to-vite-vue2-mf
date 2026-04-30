@@ -62,6 +62,25 @@ IGNORE_DIRS = {
     ".vscode",
 }
 
+REMOTE_ONLY_ENTRY_FILES = [
+    "index.html",
+    "bootstrap.js",
+    "bootstrap.ts",
+    "bootstrap.mjs",
+    "bootstrap.jsx",
+    "bootstrap.tsx",
+    "src/main.js",
+    "src/main.ts",
+    "src/main.mjs",
+    "src/main.jsx",
+    "src/main.tsx",
+    "src/bootstrap.js",
+    "src/bootstrap.ts",
+    "src/bootstrap.mjs",
+    "src/bootstrap.jsx",
+    "src/bootstrap.tsx",
+]
+
 
 @dataclass
 class Check:
@@ -84,6 +103,35 @@ def safe_read(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
+
+
+def load_package_json(project_root: Path) -> Dict:
+    package_json = project_root / "package.json"
+    if not package_json.exists():
+        return {}
+
+    try:
+        data = json.loads(safe_read(package_json))
+    except json.JSONDecodeError:
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def get_vite_config_paths(project_root: Path) -> List[Path]:
+    return [project_root / name for name in VITE_CONFIG_CANDIDATES if (project_root / name).exists()]
+
+
+def get_vite_config_text(project_root: Path) -> str:
+    return "\n".join(safe_read(path) for path in get_vite_config_paths(project_root))
+
+
+def is_module_federation_project(project_root: Path) -> bool:
+    vite_config_text = get_vite_config_text(project_root)
+    return bool(
+        re.search(r"@module-federation/vite", vite_config_text)
+        or re.search(r"\bfederation\s*\(", vite_config_text)
+    )
 
 
 def iter_text_files(project_root: Path) -> Iterable[Path]:
@@ -135,34 +183,35 @@ def check_vite_config(project_root: Path) -> Check:
     )
 
 
-def check_index_entry(project_root: Path) -> Check:
-    index_html = project_root / "index.html"
-    if not index_html.exists():
+def check_remote_only_entry_contract(project_root: Path) -> Check:
+    if not is_module_federation_project(project_root):
         return Check(
-            check_id="index-html-entry",
-            title="Root index.html exists with Vite entry",
-            severity="blocker",
-            status="FAIL",
-            detail="index.html is missing.",
-            next_action="Add root index.html with module entry script to src/main.js.",
-        )
-    text = safe_read(index_html)
-    if re.search(r'<script[^>]+type=["\']module["\'][^>]+src=["\']/src/main\.(js|ts|mjs|jsx|tsx)["\']', text):
-        return Check(
-            check_id="index-html-entry",
-            title="Root index.html exists with Vite entry",
-            severity="blocker",
+            check_id="remote-only-entry-contract",
+            title="Remote-only entry shell files removed",
+            severity="info",
             status="PASS",
-            detail="Module entry script to /src/main.* detected.",
+            detail="Module Federation was not detected; remote-only entry contract check skipped.",
             next_action="None.",
         )
+
+    unexpected_entries = [relpath for relpath in REMOTE_ONLY_ENTRY_FILES if (project_root / relpath).exists()]
+    if unexpected_entries:
+        return Check(
+            check_id="remote-only-entry-contract",
+            title="Remote-only entry shell files removed",
+            severity="blocker",
+            status="FAIL",
+            detail=f"Remote-only project still keeps entry shell files: {', '.join(unexpected_entries)}",
+            next_action="Remove root index.html and standalone HTML-mounted entry shell files such as src/main.* or bootstrap.*.",
+        )
+
     return Check(
-        check_id="index-html-entry",
-        title="Root index.html exists with Vite entry",
-        severity="warning",
-        status="WARN",
-        detail="index.html exists but /src/main.* module entry was not detected.",
-        next_action="Ensure index.html has <script type=\"module\" src=\"/src/main.js\"></script> or equivalent.",
+        check_id="remote-only-entry-contract",
+        title="Remote-only entry shell files removed",
+        severity="blocker",
+        status="PASS",
+        detail="No root index.html or standalone HTML-mounted entry shell files were found.",
+        next_action="None.",
     )
 
 
@@ -177,9 +226,8 @@ def check_package_scripts(project_root: Path) -> Check:
             detail="package.json missing.",
             next_action="Add package.json with scripts.dev/build/preview for Vite.",
         )
-    try:
-        data = json.loads(safe_read(package_json))
-    except json.JSONDecodeError:
+    data = load_package_json(project_root)
+    if not data:
         return Check(
             check_id="package-scripts",
             title="package.json scripts migrated to Vite",
@@ -188,7 +236,7 @@ def check_package_scripts(project_root: Path) -> Check:
             detail="package.json parse failed.",
             next_action="Fix JSON format and set scripts.dev/build/preview.",
         )
-    scripts = data.get("scripts") if isinstance(data, dict) else None
+    scripts = data.get("scripts")
     if not isinstance(scripts, dict):
         return Check(
             check_id="package-scripts",
@@ -279,21 +327,14 @@ def check_legacy_files(project_root: Path) -> List[Check]:
 
 
 def check_module_federation(project_root: Path) -> Check:
-    config_paths = [project_root / name for name in VITE_CONFIG_CANDIDATES if (project_root / name).exists()]
-    vite_config_text = "\n".join(safe_read(path) for path in config_paths)
-    has_mf_plugin = bool(
-        re.search(r"@module-federation/vite", vite_config_text)
-        or re.search(r"\bfederation\s*\(", vite_config_text)
-    )
+    vite_config_text = get_vite_config_text(project_root)
+    has_mf_plugin = is_module_federation_project(project_root)
     has_preserve_plugin = bool(
         re.search(
             r"plugins\s*:\s*\[[\s\S]*?\bpreserveVueFederationSingleton\s*\(\s*\)",
             vite_config_text,
         )
     )
-
-    remote_wrapper = project_root / "public" / "remoteEntry.js"
-    has_wrapper = remote_wrapper.exists()
 
     if has_mf_plugin and not has_preserve_plugin:
         return Check(
@@ -304,31 +345,98 @@ def check_module_federation(project_root: Path) -> Check:
             detail="MF plugin detected but preserveVueFederationSingleton() was not found in vite.config plugins.",
             next_action="Add preserveVueFederationSingleton() before federation() so Vue shared singleton resolution still targets bare vue.",
         )
-    if has_mf_plugin and has_wrapper:
+    if has_mf_plugin:
         return Check(
             check_id="module-federation-compat",
             title="Module Federation + Vue singleton preservation",
-            severity="warning",
+            severity="blocker",
             status="PASS",
-            detail="Detected MF plugin config, preserveVueFederationSingleton(), and public/remoteEntry.js wrapper.",
+            detail="Detected MF plugin config and preserveVueFederationSingleton().",
             next_action="None.",
-        )
-    if has_mf_plugin and not has_wrapper:
-        return Check(
-            check_id="module-federation-compat",
-            title="Module Federation + Vue singleton preservation",
-            severity="warning",
-            status="WARN",
-            detail="MF plugin and preserveVueFederationSingleton() detected but public/remoteEntry.js wrapper is missing.",
-            next_action="Add wrapper if any webpack consumer expects script/var remote.",
         )
     return Check(
         check_id="module-federation-compat",
         title="Module Federation + Vue singleton preservation",
         severity="info",
-        status="WARN",
-        detail="MF plugin was not detected in vite config.",
-        next_action="If project uses Module Federation, add @module-federation/vite configuration.",
+        status="PASS",
+        detail="MF plugin was not detected in vite config; singleton preservation check skipped.",
+        next_action="None.",
+    )
+
+
+def check_mf_app_version(project_root: Path) -> Check:
+    if not is_module_federation_project(project_root):
+        return Check(
+            check_id="mf-app-version-contract",
+            title="mf-app-version contract configured",
+            severity="info",
+            status="PASS",
+            detail="Module Federation was not detected; mf-app-version check skipped.",
+            next_action="None.",
+        )
+
+    data = load_package_json(project_root)
+    dependencies = data.get("dependencies") if isinstance(data.get("dependencies"), dict) else {}
+    dev_dependencies = data.get("devDependencies") if isinstance(data.get("devDependencies"), dict) else {}
+    vite_config_text = get_vite_config_text(project_root)
+
+    missing: List[str] = []
+    if "mf-app-version" not in dependencies and "mf-app-version" not in dev_dependencies:
+        missing.append("package.json is missing mf-app-version in dependencies/devDependencies")
+    if "createMfAppVersionPlugin" not in vite_config_text:
+        missing.append("vite.config.* is missing createMfAppVersionPlugin import")
+    if not re.search(r"\bcreateMfAppVersionPlugin\s*\(", vite_config_text):
+        missing.append("vite.config.* is missing createMfAppVersionPlugin() registration")
+
+    if missing:
+        return Check(
+            check_id="mf-app-version-contract",
+            title="mf-app-version contract configured",
+            severity="blocker",
+            status="FAIL",
+            detail="; ".join(missing),
+            next_action="Install mf-app-version and register createMfAppVersionPlugin() in the Vite plugin list. Do not add ./app-version manually; the plugin injects it.",
+        )
+
+    return Check(
+        check_id="mf-app-version-contract",
+        title="mf-app-version contract configured",
+        severity="blocker",
+        status="PASS",
+        detail="mf-app-version is installed and createMfAppVersionPlugin() is registered in vite.config.*.",
+        next_action="None.",
+    )
+
+
+def check_remote_entry_wrapper(project_root: Path) -> Check:
+    if not is_module_federation_project(project_root):
+        return Check(
+            check_id="remote-entry-wrapper",
+            title="Handwritten public/remoteEntry.js wrapper removed",
+            severity="info",
+            status="PASS",
+            detail="Module Federation was not detected; remoteEntry wrapper check skipped.",
+            next_action="None.",
+        )
+
+    remote_wrapper = project_root / "public" / "remoteEntry.js"
+    if remote_wrapper.exists():
+        return Check(
+            check_id="remote-entry-wrapper",
+            title="Handwritten public/remoteEntry.js wrapper removed",
+            severity="blocker",
+            status="FAIL",
+            detail="Remote-only project still keeps public/remoteEntry.js.",
+            next_action="Remove handwritten public/remoteEntry.js and rely on federation({ varFilename: 'remoteEntry.js' }).",
+        )
+
+    return Check(
+        check_id="remote-entry-wrapper",
+        title="Handwritten public/remoteEntry.js wrapper removed",
+        severity="blocker",
+        status="PASS",
+        detail="No handwritten public/remoteEntry.js wrapper was found.",
+        next_action="None.",
     )
 
 
@@ -502,12 +610,14 @@ def main() -> int:
 
     checks: List[Check] = []
     checks.append(check_vite_config(project_root))
-    checks.append(check_index_entry(project_root))
+    checks.append(check_remote_only_entry_contract(project_root))
     checks.append(check_package_scripts(project_root))
     checks.extend(check_legacy_files(project_root))
     checks.append(check_env_migration_gate(project_root))
     checks.append(check_deploy_env_contract(project_root))
     checks.append(check_module_federation(project_root))
+    checks.append(check_mf_app_version(project_root))
+    checks.append(check_remote_entry_wrapper(project_root))
 
     print(render(checks, project_root), end="")
     summary = summarize(checks)

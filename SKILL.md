@@ -34,7 +34,7 @@ python3 scripts/scan_migration_gaps.py --project-root <project-root> --format ma
 - For Vue2 + Module Federation projects that consume `ueba`, standardize the remote declaration to `remotes: { ueba: 'ueba@/remoteEntry.js' }`, aligned with `portal-app-web`.
 - For Vue2 + Module Federation projects, add `.__mf__temp` to the root `.gitignore`.
 - For Vue2 + Module Federation projects, add `mf-app-version` as a required migration dependency and register `createMfAppVersionPlugin()` in `vite.config.js`; treat it as the standard replacement for legacy webpack-side app version plugins.
-- For Vue2 + Module Federation projects, expose app version through the shared `mf-app-version` contract instead of maintaining per-app webpack version injection code; `./app-version` must be provided by the Vite-side migration result.
+- For Vue2 + Module Federation projects, expose app version through the shared `mf-app-version` contract instead of maintaining per-app webpack version injection code; `./app-version` must be provided by the Vite-side migration result through `createMfAppVersionPlugin()`, not by a handwritten `exposes` entry.
 - Add/adjust `vite.config.js`; for Vue2 + Module Federation projects, do not keep a root `index.html` entry or standalone app-shell entry files such as `src/main.js`, `bootstrap.js`, or equivalent HTML-mounted shells.
 - When migrating webpack-era Vue2 codebases that use extensionless relative SFC imports such as `import Foo from './Foo'`, add `resolve.extensions = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json', '.vue']` in `vite.config.js` so Vite preserves its default extension set and explicitly resolves `.vue`.
 - Add `@vitejs/plugin-vue2-jsx` only if the project actually contains JSX/TSX or `<script lang="jsx">`; do not add it by default when no JSX evidence exists.
@@ -59,7 +59,7 @@ python3 scripts/scan_migration_gaps.py --project-root <project-root> --format ma
 python3 scripts/verify_migration_state.py --project-root <project-root>
 ```
 - If any `FAIL` remains, fix and rerun until all required checks pass.
-- For Vue2 + Module Federation projects, the expected remote-only result is: no required root `index.html`, no source-managed `public/remoteEntry.js`, build output emits `remoteEntry.es.js` and `remoteEntry.js`, and the root path is not treated as a required app entry.
+- For Vue2 + Module Federation projects, the expected remote-only result is: no root `index.html`, no standalone HTML-mounted app-shell entry files such as `src/main.*` or `bootstrap.*`, no source-managed `public/remoteEntry.js`, build output emits `remoteEntry.es.js` and `remoteEntry.js`, and the root path is not treated as a required app entry.
 
 ## Validated Dependency Baseline
 

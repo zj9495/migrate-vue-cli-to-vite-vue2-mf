@@ -20,6 +20,7 @@
 ### Module Federation (when applicable)
 - `@module-federation/vite@1.11.0` (fixed, aligned with `portal-app-web`; do not use `^`)
 - `@module-federation/runtime@0.8.12`
+- `mf-app-version`
 - `typescript@4.9.5`
 
 ### Browser Polyfill Set (when needed)
