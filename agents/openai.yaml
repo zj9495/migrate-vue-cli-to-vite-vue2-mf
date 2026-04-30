@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vue CLI to Vite (Vue2 MF)"
+  short_description: "Migrate Vue2 Vue CLI projects to Vite + MF"
+  default_prompt: "Migrate this Vue2 vue-cli project to Vite 7 with module federation, apply required code/config refactors, and validate build/dev parity."
